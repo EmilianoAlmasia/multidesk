@@ -19,14 +19,17 @@ const server = http.createServer(app);
 const io = new socketio.Server(server);
 
 // 2.1. Configuración de puertos
-const WEB_PORT = process.env.PORT || 3000;
-const VNC_PORT = process.env.VNC_PORT || 4567; // Puerto interno VNC para Railway TCP Proxy
+const WEB_PORT = process.env.PORT || 3000;     // Railway asigna automáticamente
+const VNC_PORT = 4567;                         // Puerto fijo TCP Proxy
 const PROJECT_NAME = 'multidesk';
 
 // 2.1.1. Detectar entorno Railway
 const IS_RAILWAY = process.env.RAILWAY_ENVIRONMENT_NAME !== undefined;
+const RAILWAY_DOMAIN = process.env.RAILWAY_PUBLIC_DOMAIN || 'multidesk-production.up.railway.app';
+
+// 2.1.2. Configuración TCP Proxy actual de Railway
 const VNC_EXTERNAL_INFO = IS_RAILWAY ? 
-    'gondola.proxy.rlwy.net:51365 (Railway TCP Proxy)' : 
+    'yamabiko.proxy.rlwy.net:40969' : 
     `localhost:${VNC_PORT}`;
 
 // 2.2. Sistema de autenticación web
@@ -485,9 +488,10 @@ io.on('connection', (socket) => {
 // 8. Iniciar servidores
 server.listen(WEB_PORT, '0.0.0.0', () => {
     console.log(`🚀 MultiDesk VNC Server iniciado`);
-    console.log(`🌐 Web Interface: ${IS_RAILWAY ? 'https://multidesk-production.up.railway.app' : `http://localhost:${WEB_PORT}`}`);
+    console.log(`🌐 Web Interface: ${IS_RAILWAY ? `https://${RAILWAY_DOMAIN}` : `http://localhost:${WEB_PORT}`}`);
     console.log(`👤 Login: admin / nikita37`);
     console.log(`📡 Proyecto: ${PROJECT_NAME}`);
+    console.log(`🔌 VNC Connection: ${VNC_EXTERNAL_INFO}`);
 });
 
 vncServer.listen(VNC_PORT, '0.0.0.0', (err) => {
@@ -499,7 +503,7 @@ vncServer.listen(VNC_PORT, '0.0.0.0', (err) => {
         console.log(`🔌 Servidor VNC escuchando en puerto ${VNC_PORT} (host: 0.0.0.0)`);
         console.log(`📋 Conecta tu cliente VNC a: ${VNC_EXTERNAL_INFO}`);
         if (IS_RAILWAY) {
-            console.log(`⚠️  TCP Proxy configurado: gondola.proxy.rlwy.net:51365 → puerto interno ${VNC_PORT}`);
+            console.log(`⚠️  TCP Proxy configurado: yamabiko.proxy.rlwy.net:40969 → puerto interno ${VNC_PORT}`);
         }
     }
 });

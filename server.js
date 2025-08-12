@@ -20,8 +20,14 @@ const io = new socketio.Server(server);
 
 // 2.1. Configuración de puertos
 const WEB_PORT = process.env.PORT || 3000;
-const VNC_PORT = 5900; // Puerto estándar VNC
+const VNC_PORT = process.env.VNC_PORT || 5901; // Puerto interno VNC (diferente de 5900)
 const PROJECT_NAME = 'multidesk';
+
+// 2.1.1. Detectar entorno Railway
+const IS_RAILWAY = process.env.RAILWAY_ENVIRONMENT_NAME !== undefined;
+const VNC_EXTERNAL_INFO = IS_RAILWAY ? 
+    'turntable.proxy.rlwy.net:54765 (Railway TCP Proxy)' : 
+    `localhost:${VNC_PORT}`;
 
 // 2.2. Sistema de autenticación web
 const users = new Map([
@@ -356,8 +362,9 @@ app.get('/viewer', requireAuth, (req, res) => {
             
             <div id="vnc-info" style="margin-bottom: 10px;">
                 <strong>Instrucciones:</strong><br>
-                1. Conecta tu cliente VNC a: <code>localhost:${VNC_PORT}</code> (local) o <code>turntable.proxy.rlwy.net:54765</code> (Railway)<br>
-                2. Una vez conectado, verás la pantalla aquí y podrás controlarla desde la web
+                1. Conecta tu cliente VNC a: <code>${VNC_EXTERNAL_INFO}</code><br>
+                2. Una vez conectado, verás la pantalla aquí y podrás controlarla desde la web<br>
+                ${IS_RAILWAY ? '<small>⚡ Ejecutándose en Railway</small>' : '<small>🏠 Ejecutándose localmente</small>'}
             </div>
             
             <div style="border: 2px solid #ccc; background: #000; position: relative;">
@@ -483,9 +490,29 @@ server.listen(WEB_PORT, () => {
     console.log(`📡 Proyecto: ${PROJECT_NAME}`);
 });
 
-vncServer.listen(VNC_PORT, () => {
-    console.log(`🔌 Servidor VNC escuchando en puerto ${VNC_PORT}`);
-    console.log(`📋 Conecta tu cliente VNC a: localhost:${VNC_PORT}`);
+vncServer.listen(VNC_PORT, (err) => {
+    if (err) {
+        console.error(`❌ Error iniciando servidor VNC en puerto ${VNC_PORT}:`, err.message);
+        console.log(`🔄 Intentando puerto alternativo...`);
+        
+        // Intentar puerto alternativo
+        const altPort = VNC_PORT + 1;
+        vncServer.listen(altPort, (err2) => {
+            if (err2) {
+                console.error(`❌ Error en puerto alternativo ${altPort}:`, err2.message);
+                process.exit(1);
+            } else {
+                console.log(`✅ Servidor VNC iniciado en puerto alternativo ${altPort}`);
+                console.log(`📋 Conecta tu cliente VNC a: localhost:${altPort}`);
+            }
+        });
+    } else {
+        console.log(`🔌 Servidor VNC escuchando en puerto ${VNC_PORT}`);
+        console.log(`📋 Conecta tu cliente VNC a: ${VNC_EXTERNAL_INFO}`);
+        if (IS_RAILWAY) {
+            console.log(`⚠️  IMPORTANTE: En Railway, configura TCP Proxy puerto 5900 → ${VNC_PORT}`);
+        }
+    }
 });
 
 // Manejo de errores

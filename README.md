@@ -80,9 +80,11 @@ Una vez conectado el cliente VNC:
 **En Railway Dashboard:**
 1. Ve a tu proyecto → **Settings**
 2. **Public Networking** → **TCP Proxy**
-3. **Port:** `5900`
+3. **Port:** `5901` (puerto interno, NO 5900)
 4. **Protocol:** `TCP`
 5. Railway te dará algo como: `turntable.proxy.rlwy.net:54765`
+
+**⚠️ Importante:** El servidor usa puerto `5901` internamente para evitar conflictos en Railway.
 
 ### 3. Conexión VNC en Railway
 **Tu cliente VNC se conecta a:**

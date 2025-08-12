@@ -8,7 +8,12 @@
     "dev": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["vnc", "remote-desktop", "websocket", "railway"],
+  "keywords": [
+    "vnc",
+    "remote-desktop",
+    "websocket",
+    "railway"
+  ],
   "author": "MultiDesk Project",
   "license": "ISC",
   "type": "commonjs",

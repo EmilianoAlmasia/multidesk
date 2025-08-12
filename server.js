@@ -20,13 +20,13 @@ const io = new socketio.Server(server);
 
 // 2.1. Configuración de puertos
 const WEB_PORT = process.env.PORT || 3000;
-const VNC_PORT = process.env.VNC_PORT || 5901; // Puerto interno VNC (diferente de 5900)
+const VNC_PORT = process.env.VNC_PORT || 4567; // Puerto interno VNC libre en Railway
 const PROJECT_NAME = 'multidesk';
 
 // 2.1.1. Detectar entorno Railway
 const IS_RAILWAY = process.env.RAILWAY_ENVIRONMENT_NAME !== undefined;
 const VNC_EXTERNAL_INFO = IS_RAILWAY ? 
-    'turntable.proxy.rlwy.net:54765 (Railway TCP Proxy)' : 
+    'gondola.proxy.rlwy.net:51365 (Railway TCP Proxy)' : 
     `localhost:${VNC_PORT}`;
 
 // 2.2. Sistema de autenticación web
@@ -510,7 +510,7 @@ vncServer.listen(VNC_PORT, (err) => {
         console.log(`🔌 Servidor VNC escuchando en puerto ${VNC_PORT}`);
         console.log(`📋 Conecta tu cliente VNC a: ${VNC_EXTERNAL_INFO}`);
         if (IS_RAILWAY) {
-            console.log(`⚠️  IMPORTANTE: En Railway, configura TCP Proxy puerto 5900 → ${VNC_PORT}`);
+            console.log(`⚠️  TCP Proxy configurado: gondola.proxy.rlwy.net:51365 → puerto interno ${VNC_PORT}`);
         }
     }
 });

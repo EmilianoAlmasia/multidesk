@@ -20,7 +20,7 @@ const io = new socketio.Server(server);
 
 // 2.1. Configuración de puertos
 const WEB_PORT = process.env.PORT || 3000;
-const VNC_PORT = process.env.VNC_PORT || 4567; // Puerto interno VNC libre en Railway
+const VNC_PORT = process.env.VNC_PORT || 4567; // Puerto interno VNC para Railway TCP Proxy
 const PROJECT_NAME = 'multidesk';
 
 // 2.1.1. Detectar entorno Railway
@@ -483,31 +483,20 @@ io.on('connection', (socket) => {
 });
 
 // 8. Iniciar servidores
-server.listen(WEB_PORT, () => {
+server.listen(WEB_PORT, '0.0.0.0', () => {
     console.log(`🚀 MultiDesk VNC Server iniciado`);
-    console.log(`🌐 Web Interface: http://localhost:${WEB_PORT}`);
+    console.log(`🌐 Web Interface: ${IS_RAILWAY ? 'https://multidesk-production.up.railway.app' : `http://localhost:${WEB_PORT}`}`);
     console.log(`👤 Login: admin / nikita37`);
     console.log(`📡 Proyecto: ${PROJECT_NAME}`);
 });
 
-vncServer.listen(VNC_PORT, (err) => {
+vncServer.listen(VNC_PORT, '0.0.0.0', (err) => {
     if (err) {
         console.error(`❌ Error iniciando servidor VNC en puerto ${VNC_PORT}:`, err.message);
-        console.log(`🔄 Intentando puerto alternativo...`);
-        
-        // Intentar puerto alternativo
-        const altPort = VNC_PORT + 1;
-        vncServer.listen(altPort, (err2) => {
-            if (err2) {
-                console.error(`❌ Error en puerto alternativo ${altPort}:`, err2.message);
-                process.exit(1);
-            } else {
-                console.log(`✅ Servidor VNC iniciado en puerto alternativo ${altPort}`);
-                console.log(`📋 Conecta tu cliente VNC a: localhost:${altPort}`);
-            }
-        });
+        // Simplificado - solo reportar error, no intentar puerto alternativo
+        process.exit(1);
     } else {
-        console.log(`🔌 Servidor VNC escuchando en puerto ${VNC_PORT}`);
+        console.log(`🔌 Servidor VNC escuchando en puerto ${VNC_PORT} (host: 0.0.0.0)`);
         console.log(`📋 Conecta tu cliente VNC a: ${VNC_EXTERNAL_INFO}`);
         if (IS_RAILWAY) {
             console.log(`⚠️  TCP Proxy configurado: gondola.proxy.rlwy.net:51365 → puerto interno ${VNC_PORT}`);

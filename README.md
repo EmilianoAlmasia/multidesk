@@ -80,11 +80,11 @@ Una vez conectado el cliente VNC:
 **En Railway Dashboard:**
 1. Ve a tu proyecto → **Settings**
 2. **Public Networking** → **TCP Proxy**
-3. **Port:** `4567` (puerto interno libre)
+3. **Port:** `8080` (puerto interno libre)
 4. **Protocol:** `TCP`
 5. Railway te dará algo como: `gondola.proxy.rlwy.net:51365`
 
-**⚠️ Importante:** El servidor usa puerto `4567` internamente para evitar conflictos en Railway.
+**⚠️ Importante:** El servidor usa puerto `8080` internamente para evitar conflictos en Railway.
 
 ### 3. Conexión VNC en Railway
 **Tu cliente VNC se conecta a:**

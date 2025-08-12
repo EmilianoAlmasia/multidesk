@@ -21,6 +21,7 @@
     "cookie-parser": "^1.4.7",
     "express": "^5.1.0",
     "rfb2": "^0.2.2",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "vnc-rfb-client": "^0.2.0"
   }
 }

@@ -1,5 +1,5 @@
-// MultiDesk - Servidor VNC Real con Web Interface
-// Basado en rfb2 server implementation
+// MultiDesk - Servidor Node.js como VNC Client con Web Interface
+// Arquitectura: Node.js se conecta como cliente VNC y retransmite a web
 
 // 1. Importar módulos
 const express = require('express');
@@ -7,264 +7,48 @@ const http = require('http');
 const socketio = require('socket.io');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
-const net = require('net');
-const util = require('util');
-const PackStream = require('./node_modules/rfb2/unpackstream');
-const EventEmitter = require('events').EventEmitter;
-const rfb = require('./node_modules/rfb2/constants');
+const VncClient = require('vnc-rfb-client');
 
 // 2. Configuración
 const app = express();
 const server = http.createServer(app);
 const io = new socketio.Server(server);
 
-// 2.1. Configuración de puertos
-const WEB_PORT = process.env.PORT || 3000;     // Railway asigna automáticamente
-const VNC_PORT = 4567;                         // Puerto fijo TCP Proxy
+// 2.1. Detectar entorno Railway
+const IS_RAILWAY = process.env.RAILWAY_ENVIRONMENT_NAME !== undefined;
+
+// 2.2. Configuración de puertos
+const WEB_PORT = IS_RAILWAY ? 8080 : (process.env.PORT || 3000);
 const PROJECT_NAME = 'multidesk';
 
-// 2.1.1. Detectar entorno Railway
-const IS_RAILWAY = process.env.RAILWAY_ENVIRONMENT_NAME !== undefined;
+// 2.3. Configuración Railway
 const RAILWAY_DOMAIN = process.env.RAILWAY_PUBLIC_DOMAIN || 'multidesk-production.up.railway.app';
 
-// 2.1.2. Configuración TCP Proxy actual de Railway
-const VNC_EXTERNAL_INFO = IS_RAILWAY ? 
-    'yamabiko.proxy.rlwy.net:40969' : 
-    `localhost:${VNC_PORT}`;
+// 2.4. Configuración VNC Target (servidor al que nos conectaremos)
+const VNC_TARGET = {
+    host: process.env.VNC_HOST || '127.0.0.1',        // IP del TightVNC Server
+    port: parseInt(process.env.VNC_PORT) || 5900,     // Puerto VNC
+    password: process.env.VNC_PASSWORD || 'admin123'   // Password del VNC Server
+};
 
-// 2.2. Sistema de autenticación web
+// 2.5. Sistema de autenticación web
 const users = new Map([
     ['admin', 'nikita37']
 ]);
 const sessions = new Map();
 
-// 2.3. Estado del servidor VNC
-let vncClients = new Map(); // Almacenar clientes VNC conectados
-let webViewers = new Set(); // Almacenar viewers web conectados
-let currentFrame = null; // Frame actual para nuevos viewers
-
-// 3. Clase RfbServer (basada en rfb2/rfbserver.js)
-function RfbServer(stream, clientId) {
-    EventEmitter.call(this);
-    this.clientId = clientId;
-    this.stream = stream;
-    this.pack_stream = new PackStream();
-    this.width = 1024;
-    this.height = 768;
-    this.title = `MultiDesk-${clientId}`;
-    
-    var serv = this;
-    
-    // Configurar streams
-    serv.pack_stream.on('data', function(data) {
-        serv.stream.write(data);
-    });
-    
-    stream.on('data', function(data) {
-        serv.pack_stream.write(data);
-    });
-    
-    stream.on('close', function() {
-        console.log(`🔌 Cliente VNC ${clientId} desconectado`);
-        vncClients.delete(clientId);
-        serv.emit('disconnected');
-        // Notificar a viewers web
-        io.emit('vnc-client-disconnected', clientId);
-    });
-    
-    // Iniciar handshake VNC
-    serv.writeServerVersion();
-}
-
-util.inherits(RfbServer, EventEmitter);
-
-// 3.1. Implementar protocolo VNC
-RfbServer.prototype.writeServerVersion = function() {
-    console.log(`📋 Iniciando handshake VNC para cliente ${this.clientId}`);
-    var serv = this;
-    this.stream.write(rfb.versionstring.V3_008);
-    this.pack_stream.get(12, function(buf) {
-        console.log(`✅ Cliente ${serv.clientId} versión:`, buf.toString('ascii').trim());
-        serv.writeSecurityTypes();
-    });
+// 2.6. Estado del cliente VNC
+let vncClient = null;
+let isVncConnected = false;
+let webViewers = new Set();
+let currentFrame = null;
+let vncInfo = {
+    width: 0,
+    height: 0,
+    connected: false
 };
 
-RfbServer.prototype.writeSecurityTypes = function() {
-    var serv = this;
-    // Usar seguridad None para simplificar
-    serv.pack_stream.pack('CC', [1, rfb.security.None]);
-    serv.pack_stream.flush();
-    
-    serv.pack_stream.unpack('C', function(cliSecType) {
-        console.log(`🔐 Cliente ${serv.clientId} eligió seguridad:`, cliSecType[0]);
-        serv.processSecurity(cliSecType[0]);
-    });
-};
-
-RfbServer.prototype.processSecurity = function(securityType) {
-    var serv = this;
-    // Enviar resultado de seguridad OK
-    serv.pack_stream.pack('L', [0]).flush();
-    serv.readClientInit();
-};
-
-RfbServer.prototype.readClientInit = function() {
-    var serv = this;
-    serv.pack_stream.unpack('C', function(isShared) {
-        console.log(`🤝 Cliente ${serv.clientId} shared:`, isShared[0]);
-        serv.writeServerInit();
-    });
-};
-
-RfbServer.prototype.writeServerInit = function() {
-    var serv = this;
-    serv.pack_stream.pack('SSCCCCSSSCCCxxxLa', [
-        serv.width,  // ancho
-        serv.height, // alto
-        32,          // bits por pixel
-        24,          // profundidad
-        0,           // big endian
-        1,           // true color
-        255,         // red max
-        255,         // green max  
-        255,         // blue max
-        16,          // red shift
-        8,           // green shift
-        0,           // blue shift
-        serv.title.length,
-        serv.title
-    ]);
-    serv.pack_stream.flush();
-    
-    console.log(`🖥️  Cliente ${serv.clientId} inicializado: ${serv.width}x${serv.height}`);
-    
-    // Notificar a viewers web que hay cliente VNC
-    io.emit('vnc-client-connected', {
-        clientId: serv.clientId,
-        width: serv.width,
-        height: serv.height,
-        title: serv.title
-    });
-    
-    serv.expectMessage();
-};
-
-RfbServer.prototype.expectMessage = function() {
-    var serv = this;
-    serv.pack_stream.get(1, function(msgType) {
-        switch(msgType[0]) {
-            case rfb.clientMsgTypes.fbUpdate:
-                var updateRequest = {};
-                serv.pack_stream.unpackTo(updateRequest, [
-                    'C incremental',
-                    'S x',
-                    'S y', 
-                    'S width',
-                    'S height'
-                ], function() {
-                    console.log(`🖼️  Cliente ${serv.clientId} solicita frame:`, updateRequest);
-                    serv.sendTestFrame(updateRequest);
-                    serv.expectMessage();
-                });
-                break;
-                
-            case rfb.clientMsgTypes.setEncodings:
-                serv.pack_stream.unpack('xS', function(numEnc) {
-                    serv.pack_stream.unpack('L'.repeat(numEnc[0]), function(encodings) {
-                        console.log(`🎨 Cliente ${serv.clientId} encodings:`, encodings);
-                        serv.expectMessage();
-                    });
-                });
-                break;
-                
-            case rfb.clientMsgTypes.pointerEvent:
-                serv.pack_stream.unpack('CSS', function(res) {
-                    var pointerEvent = {
-                        clientId: serv.clientId,
-                        buttons: res[0],
-                        x: res[1],
-                        y: res[2]
-                    };
-                    console.log(`🖱️  Cliente ${serv.clientId} pointer:`, pointerEvent);
-                    
-                    // Reenviar a viewers web
-                    io.emit('vnc-pointer-event', pointerEvent);
-                    
-                    serv.expectMessage();
-                });
-                break;
-                
-            case rfb.clientMsgTypes.keyEvent:
-                serv.pack_stream.unpack('CxxL', function(res) {
-                    var keyEvent = {
-                        clientId: serv.clientId,
-                        isDown: res[0],
-                        keysym: res[1]
-                    };
-                    console.log(`⌨️  Cliente ${serv.clientId} key:`, keyEvent);
-                    
-                    // Reenviar a viewers web  
-                    io.emit('vnc-key-event', keyEvent);
-                    
-                    serv.expectMessage();
-                });
-                break;
-                
-            default:
-                console.log(`❓ Cliente ${serv.clientId} mensaje desconocido:`, msgType[0]);
-                serv.expectMessage();
-        }
-    });
-};
-
-// 3.2. Enviar frame de prueba
-RfbServer.prototype.sendTestFrame = function(updateRequest) {
-    var serv = this;
-    
-    // Crear frame de prueba (pantalla azul con texto)
-    var frameData = Buffer.alloc(serv.width * serv.height * 4);
-    
-    // Llenar con color azul (BGRA format)
-    for (let i = 0; i < frameData.length; i += 4) {
-        frameData[i] = 255;     // Blue
-        frameData[i + 1] = 0;   // Green  
-        frameData[i + 2] = 0;   // Red
-        frameData[i + 3] = 255; // Alpha
-    }
-    
-    // Enviar FramebufferUpdate
-    serv.pack_stream.pack('CSS', [
-        0,  // message type: FramebufferUpdate
-        0,  // padding
-        1   // number of rectangles
-    ]);
-    
-    // Rectangle header
-    serv.pack_stream.pack('SSSSL', [
-        0,           // x
-        0,           // y  
-        serv.width,  // width
-        serv.height, // height
-        0            // encoding: Raw
-    ]);
-    
-    // Pixel data
-    serv.pack_stream.pack('a', [frameData]);
-    serv.pack_stream.flush();
-    
-    // Enviar frame a viewers web también
-    var frameBase64 = frameData.toString('base64');
-    io.emit('vnc-frame-update', {
-        clientId: serv.clientId,
-        width: serv.width,
-        height: serv.height,
-        data: frameBase64
-    });
-    
-    currentFrame = frameBase64;
-};
-
-// 4. Middleware Express
+// 3. Middleware Express
 app.use(express.static('public'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
@@ -284,7 +68,7 @@ function generateSessionId() {
     return crypto.randomBytes(32).toString('hex');
 }
 
-// 5. Rutas web
+// 4. Rutas web
 app.get('/', (req, res) => res.redirect('/login'));
 
 app.get('/login', (req, res) => {
@@ -293,8 +77,8 @@ app.get('/login', (req, res) => {
         <html>
         <head><title>MultiDesk VNC - Login</title></head>
         <body style="font-family: Arial; max-width: 400px; margin: 100px auto; padding: 20px;">
-            <h1>🖥️ MultiDesk VNC</h1>
-            <h2>Servidor VNC Real</h2>
+            <h1>🖥️ MultiDesk VNC Client</h1>
+            <h2>Control Remoto via Web</h2>
             ${error}
             <form method="POST" action="/login">
                 <div style="margin: 10px 0;">
@@ -308,8 +92,8 @@ app.get('/login', (req, res) => {
                 <button type="submit" style="width: 100%; padding: 10px; background: #007cba; color: white; border: none; cursor: pointer;">Ingresar</button>
             </form>
             <hr>
-            <p><small>Puerto VNC: ${VNC_PORT} | Proyecto: ${PROJECT_NAME}</small></p>
-            <p><small>Clientes VNC conectados: <span id="vnc-count">${vncClients.size}</span></small></p>
+            <p><small>Target VNC: ${VNC_TARGET.host}:${VNC_TARGET.port} | Proyecto: ${PROJECT_NAME}</small></p>
+            <p><small>Estado VNC: <span style="color: ${isVncConnected ? 'green' : 'red'}">${isVncConnected ? 'Conectado' : 'Desconectado'}</span></small></p>
         </body>
         </html>
     `);
@@ -349,10 +133,10 @@ app.get('/logout', (req, res) => {
 app.get('/viewer', requireAuth, (req, res) => {
     res.send(`
         <html>
-        <head><title>MultiDesk VNC - Viewer</title></head>
+        <head><title>MultiDesk VNC - Remote Control</title></head>
         <body style="font-family: Arial; margin: 0; padding: 20px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h1>🖥️ MultiDesk VNC Server</h1>
+                <h1>🖥️ MultiDesk VNC Client</h1>
                 <div>
                     <span>Usuario: <strong>${req.user.username}</strong></span>
                     <a href="/logout" style="margin-left: 20px; color: red;">Salir</a>
@@ -364,22 +148,22 @@ app.get('/viewer', requireAuth, (req, res) => {
             </div>
             
             <div id="vnc-info" style="margin-bottom: 10px;">
-                <strong>Instrucciones:</strong><br>
-                1. Conecta tu cliente VNC a: <code>${VNC_EXTERNAL_INFO}</code><br>
-                2. Una vez conectado, verás la pantalla aquí y podrás controlarla desde la web<br>
+                <strong>VNC Target:</strong> ${VNC_TARGET.host}:${VNC_TARGET.port}<br>
+                <strong>Estado:</strong> <span id="connection-status">${isVncConnected ? 'Conectado' : 'Intentando conectar...'}</span><br>
                 ${IS_RAILWAY ? '<small>⚡ Ejecutándose en Railway</small>' : '<small>🏠 Ejecutándose localmente</small>'}
             </div>
             
             <div style="border: 2px solid #ccc; background: #000; position: relative;">
-                <canvas id="screen" style="display: block; max-width: 100%; height: auto;"></canvas>
+                <canvas id="screen" style="display: none; max-width: 100%; height: auto; cursor: crosshair;"></canvas>
                 <div id="no-vnc" style="color: white; text-align: center; padding: 50px;">
-                    Esperando conexión de cliente VNC...
+                    ${isVncConnected ? 'Cargando escritorio...' : 'Conectando a VNC Server...'}
                 </div>
             </div>
             
             <div id="controls" style="margin-top: 10px;">
+                <button onclick="reconnectVnc()">Reconectar VNC</button>
                 <button onclick="sendTestClick()">Test Click</button>
-                <button onclick="sendTestKey()">Test Key</button>
+                <button onclick="sendTestKey()">Test Key (A)</button>
                 <span id="mouse-pos" style="margin-left: 20px;"></span>
             </div>
             
@@ -390,122 +174,247 @@ app.get('/viewer', requireAuth, (req, res) => {
                 const ctx = canvas.getContext('2d');
                 const status = document.getElementById('status');
                 const noVnc = document.getElementById('no-vnc');
-                let currentClient = null;
+                const connectionStatus = document.getElementById('connection-status');
                 
                 socket.on('connect', () => {
                     status.textContent = 'Estado: Conectado al servidor web';
                 });
                 
-                socket.on('vnc-client-connected', (clientInfo) => {
-                    currentClient = clientInfo.clientId;
-                    status.textContent = \`Estado: Cliente VNC \${clientInfo.clientId} conectado (\${clientInfo.width}x\${clientInfo.height})\`;
-                    canvas.width = clientInfo.width;
-                    canvas.height = clientInfo.height;
+                socket.on('vnc-connected', (info) => {
+                    connectionStatus.textContent = 'Conectado';
+                    status.textContent = \`Estado: VNC conectado (\${info.width}x\${info.height})\`;
+                    canvas.width = info.width;
+                    canvas.height = info.height;
                     noVnc.style.display = 'none';
                     canvas.style.display = 'block';
                 });
                 
-                socket.on('vnc-client-disconnected', (clientId) => {
-                    status.textContent = \`Estado: Cliente VNC \${clientId} desconectado\`;
-                    currentClient = null;
+                socket.on('vnc-disconnected', () => {
+                    connectionStatus.textContent = 'Desconectado';
+                    status.textContent = 'Estado: VNC desconectado';
                     noVnc.style.display = 'block';
                     canvas.style.display = 'none';
+                    noVnc.textContent = 'VNC desconectado. Intentando reconectar...';
                 });
                 
-                socket.on('vnc-frame-update', (frameData) => {
+                socket.on('vnc-frame', (frameData) => {
                     const img = new Image();
                     img.onload = () => {
                         ctx.clearRect(0, 0, canvas.width, canvas.height);
                         ctx.drawImage(img, 0, 0);
                     };
-                    img.src = 'data:image/rgba;base64,' + frameData.data;
+                    img.src = 'data:image/png;base64,' + frameData;
                 });
                 
-                socket.on('vnc-pointer-event', (pointerEvent) => {
-                    // Mostrar eventos de mouse del cliente VNC
-                    document.getElementById('mouse-pos').textContent = 
-                        \`VNC Mouse: \${pointerEvent.x},\${pointerEvent.y} buttons:\${pointerEvent.buttons}\`;
+                socket.on('vnc-error', (error) => {
+                    status.textContent = \`Error VNC: \${error}\`;
+                    connectionStatus.textContent = 'Error';
                 });
                 
-                // Enviar eventos de mouse al servidor (para futuro control)
+                // Control de mouse sobre canvas
                 canvas.addEventListener('mousemove', (e) => {
                     const rect = canvas.getBoundingClientRect();
                     const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width));
                     const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height));
-                    document.getElementById('mouse-pos').textContent = \`Web Mouse: \${x},\${y}\`;
+                    
+                    socket.emit('vnc-pointer-event', { x, y, buttons: 0 });
+                    document.getElementById('mouse-pos').textContent = \`Mouse: \${x},\${y}\`;
                 });
                 
-                function sendTestClick() {
-                    if (currentClient) {
-                        socket.emit('web-to-vnc-pointer', {
-                            clientId: currentClient,
-                            x: 100,
-                            y: 100,
-                            buttons: 1
-                        });
+                canvas.addEventListener('mousedown', (e) => {
+                    const rect = canvas.getBoundingClientRect();
+                    const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width));
+                    const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height));
+                    
+                    socket.emit('vnc-pointer-event', { x, y, buttons: 1 });
+                });
+                
+                canvas.addEventListener('mouseup', (e) => {
+                    const rect = canvas.getBoundingClientRect();
+                    const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width));
+                    const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height));
+                    
+                    socket.emit('vnc-pointer-event', { x, y, buttons: 0 });
+                });
+                
+                // Control de teclado
+                document.addEventListener('keydown', (e) => {
+                    if (document.activeElement === canvas || e.target === canvas) {
+                        e.preventDefault();
+                        socket.emit('vnc-key-event', { key: e.keyCode, down: true });
                     }
+                });
+                
+                document.addEventListener('keyup', (e) => {
+                    if (document.activeElement === canvas || e.target === canvas) {
+                        e.preventDefault();
+                        socket.emit('vnc-key-event', { key: e.keyCode, down: false });
+                    }
+                });
+                
+                function reconnectVnc() {
+                    socket.emit('reconnect-vnc');
+                }
+                
+                function sendTestClick() {
+                    socket.emit('vnc-pointer-event', { x: 100, y: 100, buttons: 1 });
+                    setTimeout(() => {
+                        socket.emit('vnc-pointer-event', { x: 100, y: 100, buttons: 0 });
+                    }, 100);
                 }
                 
                 function sendTestKey() {
-                    if (currentClient) {
-                        socket.emit('web-to-vnc-key', {
-                            clientId: currentClient,
-                            keysym: 65, // 'A'
-                            isDown: 1
-                        });
-                    }
+                    socket.emit('vnc-key-event', { key: 65, down: true }); // A
+                    setTimeout(() => {
+                        socket.emit('vnc-key-event', { key: 65, down: false });
+                    }, 100);
                 }
+                
+                // Focus en canvas para capturar teclado
+                canvas.setAttribute('tabindex', '0');
+                canvas.focus();
             </script>
         </body>
         </html>
     `);
 });
 
-// 6. Servidor VNC
-const vncServer = net.createServer(function(conn) {
-    const clientId = `client-${Date.now()}`;
-    console.log(`🔗 Nueva conexión VNC: ${clientId} desde ${conn.remoteAddress}`);
+// 5. Funciones VNC Client
+function connectToVnc() {
+    if (vncClient) {
+        try {
+            vncClient.disconnect();
+        } catch (e) {
+            console.log('🔧 Limpiando conexión anterior');
+        }
+    }
     
-    const rfbServer = new RfbServer(conn, clientId);
-    vncClients.set(clientId, rfbServer);
+    console.log(`🔌 Conectando a VNC Server: ${VNC_TARGET.host}:${VNC_TARGET.port}`);
     
-    rfbServer.on('disconnected', () => {
-        vncClients.delete(clientId);
+    vncClient = new VncClient({
+        debug: false,
+        encodings: [
+            VncClient.consts.encodings.raw,
+            VncClient.consts.encodings.copyRect,
+            VncClient.consts.encodings.hextile,
+            VncClient.consts.encodings.zrle,
+            VncClient.consts.encodings.pseudoDesktopSize,
+            VncClient.consts.encodings.pseudoCursor
+        ]
     });
-});
+    
+    // Eventos del cliente VNC
+    vncClient.on('connected', () => {
+        console.log('✅ VNC conectado exitosamente');
+        isVncConnected = true;
+        io.emit('vnc-connected', vncInfo);
+    });
+    
+    vncClient.on('disconnected', () => {
+        console.log('❌ VNC desconectado');
+        isVncConnected = false;
+        io.emit('vnc-disconnected');
+        
+        // Reconectar automáticamente después de 5 segundos
+        setTimeout(() => {
+            console.log('🔄 Reintentando conexión VNC...');
+            connectToVnc();
+        }, 5000);
+    });
+    
+    vncClient.on('connectError', (err) => {
+        console.error('❌ Error conectando VNC:', err.message);
+        isVncConnected = false;
+        io.emit('vnc-error', err.message);
+    });
+    
+    vncClient.on('authError', (err) => {
+        console.error('🔐 Error de autenticación VNC:', err.message);
+        io.emit('vnc-error', `Autenticación: ${err.message}`);
+    });
+    
+    vncClient.on('firstFrameUpdate', (fb) => {
+        console.log(`🖥️ Primer frame recibido: ${fb.width}x${fb.height}`);
+        vncInfo = {
+            width: fb.width,
+            height: fb.height,
+            connected: true
+        };
+        
+        // Enviar frame como PNG base64
+        const frameBuffer = fb.buffer;
+        const frameBase64 = frameBuffer.toString('base64');
+        currentFrame = frameBuffer;
+        
+        io.emit('vnc-frame', frameBase64);
+    });
+    
+    vncClient.on('frameUpdate', (fb) => {
+        // Actualización de frame
+        const frameBuffer = fb.buffer;
+        const frameBase64 = frameBuffer.toString('base64');
+        currentFrame = frameBuffer;
+        
+        io.emit('vnc-frame', frameBase64);
+    });
+    
+    // Conectar al servidor VNC
+    vncClient.connect({
+        host: VNC_TARGET.host,
+        port: VNC_TARGET.port,
+        password: VNC_TARGET.password
+    });
+}
 
-// 7. Socket.io para viewers web
+// 6. Socket.io para control web
 io.on('connection', (socket) => {
     console.log(`🌐 Viewer web conectado: ${socket.id}`);
     webViewers.add(socket.id);
+    
+    // Enviar estado actual
+    if (isVncConnected) {
+        socket.emit('vnc-connected', vncInfo);
+        if (currentFrame) {
+            socket.emit('vnc-frame', currentFrame.toString('base64'));
+        }
+    }
     
     socket.on('disconnect', () => {
         webViewers.delete(socket.id);
         console.log(`🌐 Viewer web desconectado: ${socket.id}`);
     });
+    
+    // Eventos de control remoto
+    socket.on('vnc-pointer-event', (data) => {
+        if (vncClient && isVncConnected) {
+            vncClient.sendPointerEvent(data.x, data.y, data.buttons);
+        }
+    });
+    
+    socket.on('vnc-key-event', (data) => {
+        if (vncClient && isVncConnected) {
+            vncClient.sendKeyEvent(data.key, data.down);
+        }
+    });
+    
+    socket.on('reconnect-vnc', () => {
+        console.log('🔄 Reconexión VNC solicitada desde web');
+        connectToVnc();
+    });
 });
 
-// 8. Iniciar servidores
+// 7. Iniciar servidor web
 server.listen(WEB_PORT, '0.0.0.0', () => {
-    console.log(`🚀 MultiDesk VNC Server iniciado`);
+    console.log(`🚀 MultiDesk VNC Client iniciado`);
     console.log(`🌐 Web Interface: ${IS_RAILWAY ? `https://${RAILWAY_DOMAIN}` : `http://localhost:${WEB_PORT}`}`);
     console.log(`👤 Login: admin / nikita37`);
+    console.log(`🎯 VNC Target: ${VNC_TARGET.host}:${VNC_TARGET.port}`);
     console.log(`📡 Proyecto: ${PROJECT_NAME}`);
-    console.log(`🔌 VNC Connection: ${VNC_EXTERNAL_INFO}`);
-});
-
-vncServer.listen(VNC_PORT, '0.0.0.0', (err) => {
-    if (err) {
-        console.error(`❌ Error iniciando servidor VNC en puerto ${VNC_PORT}:`, err.message);
-        // Simplificado - solo reportar error, no intentar puerto alternativo
-        process.exit(1);
-    } else {
-        console.log(`🔌 Servidor VNC escuchando en puerto ${VNC_PORT} (host: 0.0.0.0)`);
-        console.log(`📋 Conecta tu cliente VNC a: ${VNC_EXTERNAL_INFO}`);
-        if (IS_RAILWAY) {
-            console.log(`⚠️  TCP Proxy configurado: yamabiko.proxy.rlwy.net:40969 → puerto interno ${VNC_PORT}`);
-        }
-    }
+    
+    // Iniciar conexión VNC
+    setTimeout(() => {
+        connectToVnc();
+    }, 2000);
 });
 
 // Manejo de errores
@@ -515,4 +424,13 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Promesa rechazada:', reason);
+});
+
+// Cleanup al salir
+process.on('SIGINT', () => {
+    console.log('🛑 Cerrando servidor...');
+    if (vncClient) {
+        vncClient.disconnect();
+    }
+    process.exit(0);
 });
